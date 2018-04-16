@@ -26,17 +26,21 @@ BATCH_SIZE = 32
 
 log_device_placement = False
 
-EPOCH_NUM = 100
+EPOCH_NUM = 1000
 
 DROP_RATE = 0.5
 num_output = 4
-# path_of_data = r'C:\sunyao_document\data\data_out\\'
-path_of_data = r'/media/dengy/我的文件/sunyao/Training_Set/'
-path_of_val = r'/media/dengy/我的文件/sunyao/Validation_Set/'
-# path_of_weights = r'C:\sunyao_document\data\out\weights'
-path_of_weights = r'/media/dengy/我的文件/sunyao/weights'
-# path_of_log = r'C:\sunyao_document\data\out\log'
-path_of_log = r'/media/dengy/我的文件/sunyao/log'
+
+# path_of_data = r'/media/dengy/我的文件/sunyao/Training_Set/'
+# path_of_val = r'/media/dengy/我的文件/sunyao/Validation_Set/'
+# path_of_weights = r'/media/dengy/我的文件/sunyao/weights'
+# path_of_log = r'/media/dengy/我的文件/sunyao/log'
+
+path_of_data = '/media/public/0C96AE1147B28ADF/dy/dataset/Training_Set/'
+path_of_val = '/media/public/0C96AE1147B28ADF/dy/dataset/Validation_Set/'
+path_of_weights = '/media/public/0C96AE1147B28ADF/sunyao/result/weights'
+path_of_log = '/media/public/0C96AE1147B28ADF/sunyao/result/log'
+
 
 every_class_number = 10000
 #监测一个变量,如果这个变量在patient周期内没有提高,则降低学习率
@@ -60,7 +64,6 @@ label_all = None
 imgs_val = None
 label_val = None
 
-
 padding_size = 37
 
 def Mirroring(data):
@@ -69,7 +72,7 @@ def Mirroring(data):
     return new_data
 
 def generate_train_data():
-    global imgs_all, label_all
+    global imgs_all, label_all, every_class_number
     train_one_imgs = []
     train_one_label = []
     class_0_numbe = 0
@@ -159,9 +162,10 @@ def load_data(phase='train'):
         path_every = glob(os.path.join(path_of_val, '*'))
     pointer_read = True
     for i in path_every:
-        if not os.path.isdir(i):
-            continue
         for single_data in os.listdir(i):
+            tmp_score = fuzz.partial_ratio("._", single_data)
+            if tmp_score == 100:
+                continue
             score_imgs = fuzz.partial_ratio("strip", single_data)
             score_label = fuzz.partial_ratio("segTRI_ana", single_data)
             if score_label == 100:
@@ -200,11 +204,13 @@ def load_data(phase='train'):
 
 
 def single_gpu():
+    global every_class_number
     load_data('train')
     load_data('val')
 # 提取验证集数据
+    every_class_number = 1000
     imgs_val, label_val = generate_train_data()
-
+    every_class_number = 10000
     start_1_val = int((input_size[0] - input_size[1]) / 2)
     batch_x_1_val = imgs_val[:, start_1_val:start_1_val + input_size[1], start_1_val:start_1_val + input_size[1], :]
     assert (batch_x_1_val.shape[1], batch_x_1_val.shape[2]) == (input_size[1], input_size[1])
@@ -217,8 +223,9 @@ def single_gpu():
 # 初始化设置
 # =============================================================================
     tf.reset_default_graph()
+    gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.9)
     # 选择是否显示每个op和varible的物理位置
-    config = tf.ConfigProto(log_device_placement=log_device_placement)
+    config = tf.ConfigProto(gpu_options=gpu_options, log_device_placement=log_device_placement)
     # 让gpu模式为随取随用而不是直接全部占满
     config.gpu_options.allow_growth = True
 
@@ -235,7 +242,7 @@ def single_gpu():
         
         with tf.variable_scope(tf.get_variable_scope()):
 #            with tf.device('/gpu:0'):
-            with tf.device('/cpu:0'):
+            with tf.device('/gpu:1'):
                 loss, acc = model.build_modul(train_phase)
                 grads = opt.compute_gradients(loss)
         aver_loss_op = loss
@@ -255,16 +262,15 @@ def single_gpu():
             writer_val = tf.summary.FileWriter(os.path.join(path_of_log, 'test'))
             
             writer_train.add_graph(sess.graph)
-            # merged_all = tf.summary.merge_all()
+            merged_all = tf.summary.merge_all()
             # 初始化学习率
             lr = 0.01
             _val_acc_max = 0
             _val_patient_pointer = 0
+            
             for epoch in range(EPOCH_NUM):
-# =============================================================================
-# 导入数据
-# =============================================================================
                 time_before = time.clock()
+                every_class_number = 10000
                 train_imgs, train_label = generate_train_data()
                 print('load data time...', time.clock() - time_before)
 
@@ -298,25 +304,31 @@ def single_gpu():
                     inp_dict[images_2] = batch_x_2
                     inp_dict[labels_one] = batch_y
                     inp_dict[train_phase] = True
-                    _, _loss, _acc = sess.run([apply_gradient_op, aver_loss_op, aver_acc_op], inp_dict)
+                    _, _loss, _acc, summary_all = sess.run([apply_gradient_op, aver_loss_op, aver_acc_op, merged_all], inp_dict)
 
+                    writer_train.add_summary(summary_all, epoch*total_batch+batch_idx)
+#                    writer_train.add_summary(summary_acc, epoch*total_batch+batch_idx)
+    
                     avg_loss += _loss
                     avg_acc += _acc
                 avg_loss /= total_batch
                 avg_acc /= total_batch
                 print('Epoch {}:  Train loss {:.4f}, Train acc {:.4f}'.format(epoch, avg_loss, avg_acc))
 
-# 写入tensorboard
-                inp_dict_one_epoch = {}
-                inp_dict_one_epoch[images_0] = train_imgs
-                inp_dict_one_epoch[images_1] = train_imgs[:, start_1:start_1+input_size[1], start_1:start_1+input_size[1], :]
-                inp_dict_one_epoch[images_2] = train_imgs[:, start_2:start_2+input_size[2], start_2:start_2+input_size[2], :]
-                inp_dict_one_epoch[labels_one] = train_label
-                inp_dict_one_epoch[train_phase] = False
-
-                summary_loss, summary_acc = sess.run([loss_visual, acc_visual], inp_dict_one_epoch)
-                writer_train.add_summary(summary_loss, epoch)
-                writer_train.add_summary(summary_acc, epoch)
+# =============================================================================
+# # 写入tensorboard
+#                 inp_dict_one_epoch = {}
+#                 inp_dict_one_epoch[images_0] = train_imgs
+#                 inp_dict_one_epoch[images_1] = train_imgs[:, start_1:start_1+input_size[1], start_1:start_1+input_size[1], :]
+#                 inp_dict_one_epoch[images_2] = train_imgs[:, start_2:start_2+input_size[2], start_2:start_2+input_size[2], :]
+#                 inp_dict_one_epoch[labels_one] = train_label
+#                 inp_dict_one_epoch[train_phase] = False
+#                 
+#                 
+#                 summary_loss, summary_acc = sess.run([loss_visual, acc_visual], inp_dict_one_epoch)
+#                 writer_train.add_summary(summary_loss, epoch)
+#                 writer_train.add_summary(summary_acc, epoch)
+# =============================================================================
 
 #                gpu_info = os.popen('nvidia-smi')
 #                print(gpu_info.read())
@@ -352,7 +364,12 @@ def single_gpu():
                     lr = max(lr*lr_decay_rate, 0.00001)
             print('training DONE.')
 
-single_gpu()
+
+
+if __name__=='__main__':
+    os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0,1'
+    single_gpu()
 
 
 
